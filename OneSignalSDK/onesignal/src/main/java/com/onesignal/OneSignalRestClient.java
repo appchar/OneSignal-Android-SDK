@@ -40,6 +40,10 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import javax.net.ssl.HttpsURLConnection;
 
 class OneSignalRestClient {
    static abstract class ResponseHandler {
@@ -141,6 +145,13 @@ class OneSignalRestClient {
          OneSignal.Log(OneSignal.LOG_LEVEL.DEBUG, "OneSignalRestClient: Making request to: " + BASE_URL + url);
          con = newHttpURLConnection(url);
 
+         // https://github.com/OneSignal/OneSignal-Android-SDK/issues/1465
+         // Android 4.4 and older devices fail to register to onesignal.com to due it's TLS1.2+ requirement
+         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP_MR1 && con instanceof HttpsURLConnection) {
+            HttpsURLConnection conHttps = (HttpsURLConnection) con;
+            conHttps.setSSLSocketFactory(new TLS12SocketFactory(conHttps.getSSLSocketFactory()));
+         }
+
          con.setUseCaches(false);
          con.setConnectTimeout(timeout);
          con.setReadTimeout(timeout);
@@ -158,6 +169,18 @@ class OneSignalRestClient {
 
          if (jsonBody != null) {
             String strJsonBody = jsonBody.toString();
+
+            Pattern eidPattern = Pattern.compile("(?<=\"external_user_id\":\").*\\\\/.*?(?=\",|\"\\})");
+            Matcher eidMatcher = eidPattern.matcher(strJsonBody);
+
+            if (eidMatcher.find()) {
+               String matched = eidMatcher.group(0);
+               if (matched != null) {
+                  String unescapedEID = matched.replace("\\/", "/");
+                  strJsonBody = eidMatcher.replaceAll(unescapedEID);
+               }
+            }
+
             OneSignal.Log(OneSignal.LOG_LEVEL.DEBUG, "OneSignalRestClient: " + method + " SEND JSON: " + strJsonBody);
 
             byte[] sendBytes = strJsonBody.getBytes("UTF-8");

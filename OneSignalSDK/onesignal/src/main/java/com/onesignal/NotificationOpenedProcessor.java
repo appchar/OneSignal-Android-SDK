@@ -109,7 +109,7 @@ class NotificationOpenedProcessor {
          if (!(context instanceof Activity))
             OneSignal.onesignalLog(OneSignal.LOG_LEVEL.ERROR, "NotificationOpenedProcessor processIntent from an non Activity context: " + context);
          else OneSignal.handleNotificationOpen((Activity) context, intentExtras.getDataArray(),
-                 intent.getBooleanExtra("from_alert", false), OSNotificationFormatHelper.getOSNotificationIdFromJson(intentExtras.getJsonData()));
+                 false, OSNotificationFormatHelper.getOSNotificationIdFromJson(intentExtras.getJsonData()));
       }
    }
 
@@ -139,11 +139,10 @@ class NotificationOpenedProcessor {
    }
 
    static boolean handleIAMPreviewOpen(@NonNull Activity context, @NonNull JSONObject jsonData) {
-      String previewUUID = NotificationBundleProcessor.inAppPreviewPushUUID(jsonData);
+      String previewUUID = OSInAppMessagePreviewHandler.inAppPreviewPushUUID(jsonData);
       if (previewUUID == null)
          return false;
 
-      OneSignal.startOrResumeApp(context);
       OneSignal.getInAppMessageController().displayPreviewMessage(previewUUID);
       return true;
    }
@@ -206,7 +205,6 @@ class NotificationOpenedProcessor {
          }
       } else
          whereStr = NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID + " = " + intent.getIntExtra(BUNDLE_KEY_ANDROID_NOTIFICATION_ID, 0);
-
 
       clearStatusBarNotifications(context, writableDb, summaryGroup);
       writableDb.update(NotificationTable.TABLE_NAME, newContentValuesWithConsumed(intent), whereStr, whereArgs);

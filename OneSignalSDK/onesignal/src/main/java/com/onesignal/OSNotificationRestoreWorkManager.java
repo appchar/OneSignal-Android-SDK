@@ -159,8 +159,8 @@ class OSNotificationRestoreWorkManager {
                     osNotificationId,
                     existingId,
                     fullData,
-                    true,
                     dateTime,
+                    true,
                     false
             );
 

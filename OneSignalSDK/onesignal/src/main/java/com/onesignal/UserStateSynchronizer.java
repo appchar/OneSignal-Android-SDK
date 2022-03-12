@@ -8,6 +8,8 @@ import androidx.annotation.Nullable;
 import com.onesignal.OneSignal.ChangeTagsUpdateHandler;
 import com.onesignal.OneSignal.SendTagsError;
 import com.onesignal.OneSignalStateSynchronizer.UserStateSynchronizerType;
+import com.onesignal.OneSignalStateSynchronizer.OSDeviceInfoCompletionHandler;
+import com.onesignal.OneSignalStateSynchronizer.OSDeviceInfoError;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -37,6 +39,7 @@ abstract class UserStateSynchronizer {
     protected static final String ANDROID_PERMISSION = "androidPermission";
     protected static final String SUBSCRIBABLE_STATUS = "subscribableStatus";
     protected static final String TAGS = "tags";
+    protected static final String LANGUAGE = "language";
     protected static final String EXTERNAL_USER_ID = "external_user_id";
     protected static final String EMAIL_KEY = "email";
     protected static final String LOGOUT_EMAIL = "logoutEmail";
@@ -92,6 +95,7 @@ abstract class UserStateSynchronizer {
     //    sendTags() multiple times it will call each callback
     final private Queue<ChangeTagsUpdateHandler> sendTagsHandlers = new ConcurrentLinkedQueue<>();
     final private Queue<OneSignal.OSInternalExternalUserIdUpdateCompletionHandler> externalUserIdUpdateHandlers = new ConcurrentLinkedQueue<>();
+    final private Queue<OSDeviceInfoCompletionHandler> deviceInfoCompletionHandler = new ConcurrentLinkedQueue<>();
 
     boolean hasQueuedHandlers() {
         return externalUserIdUpdateHandlers.size() > 0;
@@ -221,7 +225,8 @@ abstract class UserStateSynchronizer {
     boolean persist() {
         if (toSyncUserState != null) {
             synchronized (LOCK) {
-                boolean unSynced = currentUserState.generateJsonDiff(toSyncUserState, isSessionCall()) != null;
+                // In case current state is being clean in background, save toSyncUserState for next player sync
+                boolean unSynced = getCurrentUserState().generateJsonDiff(toSyncUserState, isSessionCall()) != null;
                 toSyncUserState.persistState();
                 return unSynced;
             }
@@ -366,6 +371,9 @@ abstract class UserStateSynchronizer {
                     OneSignal.onesignalLog(OneSignal.LOG_LEVEL.ERROR, "Error setting external user id for push with status code: "  + statusCode + " and message: " + response);
                     externalUserIdUpdateHandlersPerformOnFailure();
                 }
+
+                if (jsonBody.has(LANGUAGE))
+                    deviceInfoHandlersPerformOnFailure(new OSDeviceInfoError(statusCode, response));
             }
 
             @Override
@@ -380,6 +388,9 @@ abstract class UserStateSynchronizer {
 
                 if (jsonBody.has(EXTERNAL_USER_ID))
                     externalUserIdUpdateHandlersPerformOnSuccess();
+
+                if (jsonBody.has(LANGUAGE))
+                    deviceInfoHandlersPerformOnSuccess();
             }
         });
     }
@@ -504,7 +515,9 @@ abstract class UserStateSynchronizer {
 
     abstract protected void scheduleSyncToServer();
 
-    void updateDeviceInfo(JSONObject deviceInfo) {
+    void updateDeviceInfo(JSONObject deviceInfo, @Nullable OSDeviceInfoCompletionHandler handler) {
+        if (handler != null)
+            this.deviceInfoCompletionHandler.add(handler);
         getUserStateForModification().generateJsonDiffFromIntoSyncValued(deviceInfo, null);
     }
 
@@ -611,4 +624,18 @@ abstract class UserStateSynchronizer {
         }
     }
 
+    private void deviceInfoHandlersPerformOnSuccess() {
+        String language = OneSignalStateSynchronizer.getLanguage();
+        OSDeviceInfoCompletionHandler handler;
+        while ((handler = deviceInfoCompletionHandler.poll()) != null) {
+            handler.onSuccess(language);
+        }
+    }
+
+    private void deviceInfoHandlersPerformOnFailure(OSDeviceInfoError error) {
+        OSDeviceInfoCompletionHandler handler;
+        while((handler = deviceInfoCompletionHandler.poll()) != null) {
+            handler.onFailure(error);
+        }
+    }
 }

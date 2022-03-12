@@ -39,11 +39,8 @@ import android.database.Cursor;
 import android.net.ConnectivityManager;
 import android.os.Bundle;
 
-import androidx.annotation.Nullable;
 import androidx.test.core.app.ApplicationProvider;
 
-import com.onesignal.FocusDelaySyncJobService;
-import com.onesignal.FocusDelaySyncService;
 import com.onesignal.MockOSLog;
 import com.onesignal.MockOSSharedPreferences;
 import com.onesignal.MockOSTimeImpl;
@@ -64,14 +61,16 @@ import com.onesignal.OSSubscriptionObserver;
 import com.onesignal.OSSubscriptionStateChanges;
 import com.onesignal.OneSignal;
 import com.onesignal.OneSignal.ChangeTagsUpdateHandler;
+import com.onesignal.OneSignal.OSSetLanguageCompletionHandler;
+import com.onesignal.OneSignal.OSLanguageError;
 import com.onesignal.OneSignalPackagePrivateHelper;
 import com.onesignal.OneSignalShadowPackageManager;
 import com.onesignal.PermissionsActivity;
-import com.onesignal.ShadowAdvertisingIdProviderGPS;
 import com.onesignal.ShadowBadgeCountUpdater;
 import com.onesignal.ShadowCustomTabsClient;
 import com.onesignal.ShadowCustomTabsSession;
 import com.onesignal.ShadowFirebaseAnalytics;
+import com.onesignal.ShadowFocusHandler;
 import com.onesignal.ShadowFusedLocationApiWrapper;
 import com.onesignal.ShadowGMSLocationController;
 import com.onesignal.ShadowGenerateNotification;
@@ -86,6 +85,7 @@ import com.onesignal.ShadowOneSignalNotificationManager;
 import com.onesignal.ShadowOneSignalRestClient;
 import com.onesignal.ShadowPushRegistratorADM;
 import com.onesignal.ShadowPushRegistratorFCM;
+import com.onesignal.ShadowReceiveReceiptController;
 import com.onesignal.ShadowRoboNotificationManager;
 import com.onesignal.StaticResetHelper;
 import com.onesignal.SyncJobService;
@@ -107,13 +107,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.LooperMode;
 import org.robolectric.shadows.ShadowAlarmManager;
-import org.robolectric.shadows.ShadowApplication;
 import org.robolectric.shadows.ShadowConnectivityManager;
 import org.robolectric.shadows.ShadowLog;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -137,6 +139,7 @@ import static com.onesignal.OneSignalPackagePrivateHelper.OneSignal_setSessionMa
 import static com.onesignal.OneSignalPackagePrivateHelper.OneSignal_setTime;
 import static com.onesignal.OneSignalPackagePrivateHelper.OneSignal_setTrackerFactory;
 import static com.onesignal.OneSignalPackagePrivateHelper.OneSignal_taskQueueWaitingForInit;
+import static com.onesignal.OneSignalPackagePrivateHelper.OSObservable;
 import static com.onesignal.ShadowOneSignalRestClient.EMAIL_USER_ID;
 import static com.onesignal.ShadowOneSignalRestClient.PUSH_USER_ID;
 import static com.onesignal.ShadowOneSignalRestClient.REST_METHOD;
@@ -162,6 +165,7 @@ import static com.test.onesignal.TestHelpers.getNextJob;
 import static com.test.onesignal.TestHelpers.pauseActivity;
 import static com.test.onesignal.TestHelpers.restartAppAndElapseTimeToNextSession;
 import static com.test.onesignal.TestHelpers.startRemoteNotificationReceivedHandlerService;
+import static com.test.onesignal.TestHelpers.stopActivity;
 import static com.test.onesignal.TestHelpers.threadAndTaskWait;
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
@@ -179,17 +183,18 @@ import static org.robolectric.Shadows.shadowOf;
             ShadowPushRegistratorADM.class,
             ShadowPushRegistratorFCM.class,
             ShadowOSUtils.class,
-            ShadowAdvertisingIdProviderGPS.class,
             ShadowCustomTabsClient.class,
             ShadowCustomTabsSession.class,
             ShadowNotificationManagerCompat.class,
             ShadowJobService.class,
             ShadowHmsInstanceId.class,
+            ShadowFocusHandler.class,
             OneSignalShadowPackageManager.class
         },
         sdk = 21
 )
 @RunWith(RobolectricTestRunner.class)
+@LooperMode(LooperMode.Mode.LEGACY)
 // Enable to ensure test order to consistency debug flaky test.
 // @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class MainOneSignalClassRunner {
@@ -315,23 +320,6 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   public void testAndroidDoesNotGetAdId() throws Exception {
-      // 2. Init OneSignal so the app id is cached
-      OneSignalInit();
-      threadAndTaskWait();
-
-      // 3. Make sure device_type is Amazon (2) in player create
-      assertAndroidPlayerCreateAtIndex(1);
-
-      // 4. Assert Player Create does NOT have an ad_id
-      ShadowOneSignalRestClient.Request request = ShadowOneSignalRestClient.requests.get(1);
-      JsonAsserts.doesNotContainKeys(request.payload, new ArrayList<String>() {{ add("ad_id"); }});
-
-      // 5. Assert we did NOT try to get a Google Ad id
-      assertFalse(ShadowAdvertisingIdProviderGPS.calledGetIdentifier);
-   }
-
-   @Test
    public void testDeviceTypeIsAmazon_forPlayerCreate() throws Exception {
       // 1. Mock Amazon device type for this test
       ShadowOSUtils.supportsADM = true;
@@ -345,26 +333,6 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   public void testAmazonDoesNotGetAdId() throws Exception {
-      // 1. Mock Amazon device type for this test
-      ShadowOSUtils.supportsADM = true;
-
-      // 2. Init OneSignal so the app id is cached
-      OneSignalInit();
-      threadAndTaskWait();
-
-      // 3. Make sure device_type is Amazon (2) in player create
-      assertAmazonPlayerCreateAtIndex(1);
-
-      // 4. Assert Player Create does NOT have an ad_id
-      ShadowOneSignalRestClient.Request request = ShadowOneSignalRestClient.requests.get(1);
-      JsonAsserts.doesNotContainKeys(request.payload, new ArrayList<String>() {{ add("ad_id"); }});
-
-      // 5. Assert we did NOT try to get a Google Ad id
-      assertFalse(ShadowAdvertisingIdProviderGPS.calledGetIdentifier);
-   }
-
-   @Test
    public void testDeviceTypeIsHuawei_forPlayerCreate() throws Exception {
       // 1. Mock Amazon device type for this test
       ShadowOSUtils.supportsHMS(true);
@@ -375,26 +343,6 @@ public class MainOneSignalClassRunner {
 
       // 3. Make sure device_type is Huawei (13) in player create
       assertHuaweiPlayerCreateAtIndex(1);
-   }
-
-   @Test
-   public void testHuaweiDoesNotGetAdId() throws Exception {
-      // 1. Mock Huawei device type for this test
-      ShadowOSUtils.supportsHMS(true);
-
-      // 2. Init OneSignal so the app id is cached
-      OneSignalInit();
-      threadAndTaskWait();
-
-      // 3. Make sure device_type is Huawei (13) in player create
-      assertHuaweiPlayerCreateAtIndex(1);
-
-      // 4. Assert Player Create does NOT have an ad_id
-      ShadowOneSignalRestClient.Request request = ShadowOneSignalRestClient.requests.get(1);
-      JsonAsserts.doesNotContainKeys(request.payload, new ArrayList<String>() {{ add("ad_id"); }});
-
-      // 5. Assert we did NOT try to get a Google Ad id
-      assertFalse(ShadowAdvertisingIdProviderGPS.calledGetIdentifier);
    }
 
    @Test
@@ -648,7 +596,7 @@ public class MainOneSignalClassRunner {
       // Background app for 31 seconds
       pauseActivity(blankActivityController);
       // Non on_focus call scheduled
-      assertNumberOfServicesAvailable(1);
+      assertNumberOfServicesAvailable(0);
       time.advanceSystemTimeBy(31);
 
       // Click notification
@@ -668,8 +616,7 @@ public class MainOneSignalClassRunner {
       // Background app
       pauseActivity(blankActivityController);
       assertAndRunSyncService();
-      // FocusDelaySyncJobService + SyncJobService
-      assertNumberOfServicesAvailable(2);
+      assertNumberOfServicesAvailable(1);
 
       // Make sure no direct flag or notifications are added into the on_focus
       assertOnFocusAtIndexDoesNotHaveKeys(4, Arrays.asList("notification_ids", "direct"));
@@ -740,6 +687,20 @@ public class MainOneSignalClassRunner {
       pauseActivity(blankActivityController);
 
       assertRestCalls(4);
+   }
+
+   @Test
+   public void testAppStartFocus() throws Exception {
+      OneSignalInit();
+      threadAndTaskWait();
+
+      assertTrue(ShadowOneSignalRestClient.lastUrl.matches("players"));
+
+      stopActivity(blankActivityController);
+      assertTrue(ShadowFocusHandler.Companion.getHasStopped());
+
+      blankActivityController.resume();
+      assertFalse(ShadowFocusHandler.Companion.getHasStopped());
    }
 
    private void setOneSignalContextOpenAppThenBackgroundAndResume() throws Exception {
@@ -1096,110 +1057,6 @@ public class MainOneSignalClassRunner {
       assertEquals(null, lastNotificationOpenedBody);
    }
 
-   @Test
-   public void testOpeningLauncherActivity() throws Exception {
-      // First init run for appId to be saved
-      // At least OneSignal was init once for user to be subscribed
-      // If this doesn't' happen, notifications will not arrive
-      OneSignalInit();
-      fastColdRestartApp();
-
-      AddLauncherIntentFilter();
-      // From app launching normally
-      assertNotNull(shadowOf(blankActivity).getNextStartedActivity());
-      // Will get appId saved
-      OneSignal.initWithContext(blankActivity.getApplicationContext());
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-
-      assertNotNull(shadowOf(blankActivity).getNextStartedActivity());
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-   }
-
-   @Test
-   public void testOpeningLaunchUrl() throws Exception {
-      // First init run for appId to be saved
-      // At least OneSignal was init once for user to be subscribed
-      // If this doesn't' happen, notifications will not arrive
-      OneSignalInit();
-      fastColdRestartApp();
-      OneSignal.initWithContext(blankActivity);
-      // Removes app launch
-      shadowOf(blankActivity).getNextStartedActivity();
-
-      // No OneSignal init here to test case where it is located in an Activity.
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\", \"u\": \"http://google.com\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-      Intent intent = shadowOf(blankActivity).getNextStartedActivity();
-      assertEquals("android.intent.action.VIEW", intent.getAction());
-      assertEquals("http://google.com", intent.getData().toString());
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-   }
-
-   @Test
-   public void testOpeningLaunchUrlWithDisableDefault() throws Exception {
-      // Add the 'com.onesignal.NotificationOpened.DEFAULT' as 'DISABLE' meta-data tag
-      OneSignalShadowPackageManager.addManifestMetaData("com.onesignal.NotificationOpened.DEFAULT", "DISABLE");
-
-      // Removes app launch
-      shadowOf(blankActivity).getNextStartedActivity();
-
-      // No OneSignal init here to test case where it is located in an Activity.
-
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\", \"u\": \"http://google.com\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-   }
-
-   @Test
-   public void testDisableOpeningLauncherActivityOnNotificationOpen() throws Exception {
-      // Add the 'com.onesignal.NotificationOpened.DEFAULT' as 'DISABLE' meta-data tag
-      OneSignalShadowPackageManager.addManifestMetaData("com.onesignal.NotificationOpened.DEFAULT", "DISABLE");
-
-      // From app launching normally
-      assertNotNull(shadowOf(blankActivity).getNextStartedActivity());
-      OneSignal.setAppId(ONESIGNAL_APP_ID);
-      OneSignal.initWithContext(blankActivity);
-      OneSignal.setNotificationOpenedHandler(getNotificationOpenedHandler());
-      assertNull(lastNotificationOpenedBody);
-
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-      assertEquals("Test Msg", lastNotificationOpenedBody);
-   }
-
-   @Test
-   public void testLaunchUrlSuppressTrue() throws Exception {
-      // Add the 'com.onesignal.suppressLaunchURLs' as 'true' meta-data tag
-      OneSignalShadowPackageManager.addManifestMetaData("com.onesignal.suppressLaunchURLs", "true");
-
-      // Removes app launch
-      shadowOf(blankActivity).getNextStartedActivity();
-
-      // No OneSignal init here to test case where it is located in an Activity.
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\", \"u\": \"http://google.com\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-   }
-
-   @Test
-   public void testLaunchUrlSuppressFalse() throws Exception {
-      // Add the 'com.onesignal.suppressLaunchURLs' as 'true' meta-data tag
-      // First init run for appId to be saved
-      // At least OneSignal was init once for user to be subscribed
-      // If this doesn't' happen, notifications will not arrive
-      OneSignalInit();
-      fastColdRestartApp();
-      OneSignalShadowPackageManager.addManifestMetaData("com.onesignal.suppressLaunchURLs", "false");
-      OneSignal.initWithContext(blankActivity);
-      // Removes app launch
-      shadowOf(blankActivity).getNextStartedActivity();
-
-      // No OneSignal init here to test case where it is located in an Activity.
-      OneSignal_handleNotificationOpen(blankActivity, new JSONArray("[{ \"alert\": \"Test Msg\", \"custom\": { \"i\": \"UUID\", \"u\": \"http://google.com\" } }]"), false, ONESIGNAL_NOTIFICATION_ID);
-      Intent intent = shadowOf(blankActivity).getNextStartedActivity();
-      assertEquals("android.intent.action.VIEW", intent.getAction());
-      assertEquals("http://google.com", intent.getData().toString());
-      assertNull(shadowOf(blankActivity).getNextStartedActivity());
-   }
-
    private static String notificationReceivedBody;
    private static int androidNotificationId;
 
@@ -1269,7 +1126,7 @@ public class MainOneSignalClassRunner {
    // Start Received Request tests (report_received)
 
    @Test
-   @Config(shadows = { ShadowGenerateNotification.class })
+   @Config(shadows = { ShadowGenerateNotification.class, ShadowReceiveReceiptController.class })
    public void testNotificationReceivedSendReceivedRequest_WhenAppInBackground() throws Exception {
       // First init run for appId to be saved
       // At least OneSignal was init once for user to be subscribed
@@ -1292,7 +1149,7 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   @Config(shadows = { ShadowGenerateNotification.class })
+   @Config(shadows = { ShadowGenerateNotification.class, ShadowReceiveReceiptController.class })
    public void testNotificationReceivedSendReceivedRequest_WhenAppInForeground() throws Exception {
       ShadowOneSignalRestClient.setRemoteParamsReceiveReceiptsEnable(true);
       // First init run for appId to be saved
@@ -1312,7 +1169,7 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   @Config(shadows = { ShadowGenerateNotification.class })
+   @Config(shadows = { ShadowGenerateNotification.class, ShadowReceiveReceiptController.class })
    public void testNotificationReceivedNoSendReceivedRequest_WhenDisabled() throws Exception {
       ShadowOneSignalRestClient.setRemoteParamsReceiveReceiptsEnable(false);
       // First init run for appId to be saved
@@ -1332,7 +1189,7 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   @Config(shadows = { ShadowGenerateNotification.class })
+   @Config(shadows = { ShadowGenerateNotification.class, ShadowReceiveReceiptController.class })
    public void testNotificationReceivedNoSendReceivedRequest_WhenNotificationNotDisplayed() throws Exception {
       // 1. Setup correct notification extension service class
       startRemoteNotificationReceivedHandlerService("com.test.onesignal.MainOneSignalClassRunner$" +
@@ -1359,7 +1216,7 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   @Config(sdk = 26, shadows = { ShadowGenerateNotification.class, ShadowOneSignalNotificationManager.class })
+   @Config(sdk = 26, shadows = { ShadowGenerateNotification.class, ShadowOneSignalNotificationManager.class, ShadowReceiveReceiptController.class })
    public void testNotificationReceivedNoSendReceivedRequest_WhenNotificationNotDisplayed_DisabledByChannel() throws Exception {
       // 1. Setup correct notification extension service class
       startRemoteNotificationReceivedHandlerService("com.test.onesignal.MainOneSignalClassRunner$" +
@@ -2082,7 +1939,7 @@ public class MainOneSignalClassRunner {
    @Test
    @Config(shadows = {ShadowGoogleApiClientBuilder.class, ShadowGoogleApiClientCompatProxy.class, ShadowFusedLocationApiWrapper.class})
    public void testOneSignalMethodsBeforeInit() throws Exception {
-      ShadowApplication.getInstance().grantPermissions("android.permission.ACCESS_FINE_LOCATION");
+      shadowOf(RuntimeEnvironment.application).grantPermissions("android.permission.ACCESS_FINE_LOCATION");
       ShadowFusedLocationApiWrapper.lat = 1.0d;
       ShadowFusedLocationApiWrapper.log = 2.0d;
       ShadowFusedLocationApiWrapper.accuracy = 3.0f;
@@ -2176,7 +2033,7 @@ public class MainOneSignalClassRunner {
    @Test
    @Config(shadows = {ShadowGoogleApiClientBuilder.class, ShadowGoogleApiClientCompatProxy.class, ShadowFusedLocationApiWrapper.class})
    public void testOneSignalEmptyPendingTaskQueue() throws Exception {
-      ShadowApplication.getInstance().grantPermissions("android.permission.ACCESS_FINE_LOCATION");
+      shadowOf(RuntimeEnvironment.application).grantPermissions("android.permission.ACCESS_FINE_LOCATION");
       ShadowFusedLocationApiWrapper.lat = 1.0d;
       ShadowFusedLocationApiWrapper.log = 2.0d;
       ShadowFusedLocationApiWrapper.accuracy = 3.0f;
@@ -2285,10 +2142,8 @@ public class MainOneSignalClassRunner {
       threadAndTaskWait();
 
       OneSignal.sendTag("key", "value");
-      // Pause Activity and trigger delayed runnable that will trigger out of focus logic
+      // Pause Activity
       blankActivityController.pause();
-      TestHelpers.assertAndRunNextJob(FocusDelaySyncJobService.class);
-      // Do not run threadAndWaitThread to avoid running NetworkThread
 
       // Network call for android params and player create should have been made.
       assertEquals(2, ShadowOneSignalRestClient.networkCallCount);
@@ -2312,7 +2167,6 @@ public class MainOneSignalClassRunner {
 
       // App is swiped away
       blankActivityController.pause();
-      Robolectric.buildService(FocusDelaySyncService.class, new Intent()).startCommand(0, 0);
 
       assertEquals(2, ShadowOneSignalRestClient.networkCallCount);
       fastColdRestartApp();
@@ -2321,8 +2175,8 @@ public class MainOneSignalClassRunner {
       // Tags did not get synced so SyncService should be scheduled
       AlarmManager alarmManager = (AlarmManager)ApplicationProvider.getApplicationContext().getSystemService(Context.ALARM_SERVICE);
       ShadowAlarmManager shadowAlarmManager = shadowOf(alarmManager);
-      assertEquals(2, shadowAlarmManager.getScheduledAlarms().size());
-      assertEquals(SyncService.class, shadowOf(shadowOf(shadowAlarmManager.getScheduledAlarms().get(1).operation).getSavedIntent()).getIntentClass());
+      assertEquals(1, shadowAlarmManager.getScheduledAlarms().size());
+      assertEquals(SyncService.class, shadowOf(shadowOf(shadowAlarmManager.getNextScheduledAlarm().operation).getSavedIntent()).getIntentClass());
       shadowAlarmManager.getScheduledAlarms().clear();
 
       // Test running the service
@@ -2340,11 +2194,9 @@ public class MainOneSignalClassRunner {
       // App is swiped away
       blankActivityController.pause();
       threadAndTaskWait();
-      Robolectric.buildService(FocusDelaySyncService.class, new Intent()).startCommand(0, 0);
-      threadAndTaskWait();
 
-      // Only FocusDelaySyncService should be scheduled
-      assertEquals(1, shadowOf(alarmManager).getScheduledAlarms().size());
+      // No Focus service should be scheduled
+      assertEquals(0, shadowOf(alarmManager).getScheduledAlarms().size());
       assertEquals(4, ShadowOneSignalRestClient.networkCallCount);
    }
 
@@ -2392,14 +2244,9 @@ public class MainOneSignalClassRunner {
    @Test
    public void ensureSchedulingOfSyncJobServiceOnActivityPause() throws Exception {
       sendTagsAndImmediatelyBackgroundApp();
-      // Not call threadAndTaskWait to avoid running NetworkThread
-      TestHelpers.assertAndRunNextJob(FocusDelaySyncJobService.class);
 
-      // A future job should be scheduled to finish the sync.
+      // There should be a SyncJobService service scheduled
       assertNumberOfServicesAvailable(1);
-      threadAndTaskWait();
-      // There should be FocusDelaySyncJobService + SyncJobService services schedules
-      assertNumberOfServicesAvailable(2);
       assertAndRunSyncService();
    }
 
@@ -2447,7 +2294,7 @@ public class MainOneSignalClassRunner {
    @Config(sdk = 26, shadows = { ShadowGoogleApiClientCompatProxy.class, ShadowGMSLocationController.class })
    public void ensureSyncJobServiceRescheduleOnApiTimeout() throws Exception {
       ShadowGMSLocationController.apiFallbackTime = 0;
-      ShadowApplication.getInstance().grantPermissions("android.permission.ACCESS_FINE_LOCATION");
+      shadowOf(RuntimeEnvironment.application).grantPermissions("android.permission.ACCESS_FINE_LOCATION");
       ShadowGoogleApiClientCompatProxy.skipOnConnected = true;
 
       OneSignalInit();
@@ -2477,11 +2324,11 @@ public class MainOneSignalClassRunner {
    public void ensureSchedulingOfSyncJobServiceOnActivityPause_forPendingActiveTime() throws Exception {
       useAppFor2minThenBackground();
 
-      // There should be FocusDelaySyncJobService + SyncJobService services schedules
-      assertNumberOfServicesAvailable(2);
+      // There should be a SyncJobService service scheduled
+      assertNumberOfServicesAvailable(1);
       // A future job should be scheduled to finish the sync in case the process is killed
       //   for the on_focus call can be made.
-      assertNextJob(SyncJobService.class, 1);
+      assertNextJob(SyncJobService.class, 0);
 
       // FIXME: Cleanup for upcoming unit test
       //  This is a one off scenario where a unit test fails after this one is run
@@ -2897,6 +2744,105 @@ public class MainOneSignalClassRunner {
 
    // ####### End GetTags Tests ########
 
+   @Test
+   public void testSetLanguageOnPlayerCreate() throws Exception {
+      OneSignalInit();
+      OneSignal.setLanguage("fr");
+      threadAndTaskWait();
+
+      ShadowOneSignalRestClient.Request lastRequest = ShadowOneSignalRestClient.requests.get(1);
+
+      assertEquals("fr", lastRequest.payload.getString("language"));
+   }
+
+   @Test
+   public void testSetLanguagePUTRequest() throws Exception {
+      OneSignalInit();
+      threadAndTaskWait();
+      OneSignal.setLanguage("fr");
+      threadAndTaskWait();
+
+      ShadowOneSignalRestClient.Request lastRequest = ShadowOneSignalRestClient.requests.get(2);
+      assertEquals("fr", lastRequest.payload.getString("language"));
+   }
+
+   @Test
+   public void testSetLanguageOnSession() throws Exception {
+      OneSignalInit();
+      threadAndTaskWait();
+
+      restartAppAndElapseTimeToNextSession(time);
+
+      OneSignalInit();
+      OneSignal.setLanguage("fr");
+      threadAndTaskWait();
+
+      ShadowOneSignalRestClient.Request lastRequest = ShadowOneSignalRestClient.requests.get(3);
+      assertEquals("fr", lastRequest.payload.getString("language"));
+   }
+
+   private static class TestSetLanguageHandler implements OSSetLanguageCompletionHandler {
+      private AtomicBoolean succeeded = new AtomicBoolean(false);
+      private AtomicBoolean failed = new AtomicBoolean(false);
+
+      @Override
+      public void onSuccess(String results) { succeeded.set(true); }
+
+      @Override
+      public void onFailure(OSLanguageError error) { failed.set(true); }
+
+      boolean getSucceeded() { return  succeeded.get(); }
+
+      boolean getFailed() { return failed.get(); }
+   }
+
+   // Tests to make sure the onSuccess handler works
+   @Test
+   public void shouldSetLanguageWithResponse() throws Exception {
+      OneSignalInit();
+      threadAndTaskWait();
+
+      TestSetLanguageHandler handler = new TestSetLanguageHandler();
+
+      OneSignal.setLanguage("fr", handler);
+
+      threadAndTaskWait();
+
+      assertTrue(handler.getSucceeded());
+
+      // now test to make sure the handler still fires for a call to
+      // setLanguage() that modifies existing language
+
+      handler = new TestSetLanguageHandler();
+
+      OneSignal.setLanguage("es", handler);
+
+      threadAndTaskWait();
+
+      assertTrue(handler.getSucceeded());
+   }
+
+   // Tests to make sure that the onFailure callback works
+   @Test
+   public void shouldFailToSetLanguageWithResponse() throws Exception {
+      TestSetLanguageHandler handler = new TestSetLanguageHandler();
+
+      OneSignalInit();
+      threadAndTaskWait();
+
+      ShadowOneSignalRestClient.failMethod = "players";
+      ShadowOneSignalRestClient.failHttpCode = 403;
+      ShadowOneSignalRestClient.setNextFailureJSONResponse(new JSONObject() {{
+         put("tags", "error");
+      }});
+
+      // Should fail because players call failed with tags
+      OneSignal.setLanguage("fr", handler);
+      threadAndTaskWait();
+
+      assertTrue(handler.getFailed());
+   }
+
    /**
     * Similar workflow to testLocationPermissionPromptWithPrivacyConsent()
     * We want to provide consent but make sure that session time tracking works properly
@@ -3292,15 +3238,6 @@ public class MainOneSignalClassRunner {
    }
 
    @Test
-   public void shouldOpenChromeTab() throws Exception {
-      OneSignalInit();
-      threadAndTaskWait();
-
-      assertTrue(ShadowCustomTabsClient.bindCustomTabsServiceCalled);
-      assertTrue(ShadowCustomTabsSession.lastURL.toString().contains("https://onesignal.com/android_frame.html?app_id=b4f7f966-d8cc-11e4-bed1-df8f05be55ba&user_id=a2f7f967-e8cc-11e4-bed1-118f05be4511&ad_id=11111111-2222-3333-4444-555555555555&cbs_id="));
-   }
-
-   @Test
    public void shouldHandleChromeNullNewSession() throws Exception {
       ShadowCustomTabsClient.nullNewSession = true;
       OneSignalInit();
@@ -3338,22 +3275,18 @@ public class MainOneSignalClassRunner {
       OneSignalInit();
       threadAndTaskWait();
 
-      OSPermissionObserver permissionObserver = new OSPermissionObserver() {
-         @Override
-         public void onOSPermissionChanged(OSPermissionStateChanges stateChanges) {
-            lastPermissionStateChanges = stateChanges;
-            currentPermission = stateChanges.getTo().areNotificationsEnabled();
-         }
+      OSPermissionObserver permissionObserver = stateChanges -> {
+         lastPermissionStateChanges = stateChanges;
+         currentPermission = stateChanges.getTo().areNotificationsEnabled();
       };
       OneSignal.addPermissionObserver(permissionObserver);
       lastPermissionStateChanges = null;
       // Make sure garbage collection doesn't nuke any observers.
       Runtime.getRuntime().gc();
 
-      pauseActivity(blankActivityController);
+      stopActivity(blankActivityController);
       ShadowNotificationManagerCompat.enabled = false;
       blankActivityController.resume();
-      threadAndTaskWait();
 
       assertTrue(lastPermissionStateChanges.getFrom().areNotificationsEnabled());
       assertFalse(lastPermissionStateChanges.getTo().areNotificationsEnabled());
@@ -3597,6 +3530,15 @@ public class MainOneSignalClassRunner {
       threadAndTaskWait();
 
       assertNull(lastSMSSubscriptionStateChanges);
+   }
+
+   @Test
+   public void shouldNotThrowWhenRemovingWeakReferenceObservableThatHasBeenGarbageCollected() {
+      OSObservable<Object, Object> observer = new OSObservable<>("", false);
+      WeakReference<Object> weakObject = new WeakReference<>(new Object());
+      observer.addObserver(weakObject.get());
+      Runtime.getRuntime().gc(); // Force cleaning up WeakReference above
+      observer.removeObserver(weakObject.get());
    }
 
    @Test

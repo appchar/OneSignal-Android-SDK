@@ -42,6 +42,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+
+import androidx.annotation.Keep;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationManagerCompat;
@@ -62,7 +64,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.Locale;
+import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -136,14 +138,21 @@ class OSUtils {
       return subscribableStatus;
    }
 
-   // The the following is done to ensure Proguard compatibility with class existent detection
-   // 1. Using Class instead of Strings as class renames would result incorrectly not finding the class
-   // 2. class.getName() is called as if no method is called then the try-catch would be removed.
-   //    - Only an issue when using Proguard (NOT R8) and using getDefaultProguardFile('proguard-android-optimize.txt')
+   // Interim method that works around Proguard's overly aggressive assumenosideeffects which
+   // ignores keep rules.
+   // This is specifically designed to address Proguard removing catches for NoClassDefFoundError
+   // when the config has "-assumenosideeffects" with
+   // java.lang.Class.getName() & java.lang.Object.getClass().
+   // This @Keep annotation is key so this method does not get removed / inlined.
+   // Addresses issue https://github.com/OneSignal/OneSignal-Android-SDK/issues/1423
+   @Keep
+   private static boolean opaqueHasClass(Class<?> _class) {
+      return true;
+   }
+
    static boolean hasFCMLibrary() {
       try {
-         com.google.firebase.messaging.FirebaseMessaging.class.getName();
-         return true;
+         return opaqueHasClass(com.google.firebase.messaging.FirebaseMessaging.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -151,8 +160,7 @@ class OSUtils {
 
    static boolean hasGMSLocationLibrary() {
       try {
-         com.google.android.gms.location.LocationListener.class.getName();
-         return true;
+         return opaqueHasClass(com.google.android.gms.location.LocationListener.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -160,8 +168,7 @@ class OSUtils {
 
    private static boolean hasHMSAvailabilityLibrary() {
       try {
-         com.huawei.hms.api.HuaweiApiAvailability.class.getName();
-         return true;
+         return opaqueHasClass(com.huawei.hms.api.HuaweiApiAvailability.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -169,8 +176,7 @@ class OSUtils {
 
    private static boolean hasHMSPushKitLibrary() {
       try {
-         com.huawei.hms.aaid.HmsInstanceId.class.getName();
-         return true;
+         return opaqueHasClass(com.huawei.hms.aaid.HmsInstanceId.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -178,8 +184,7 @@ class OSUtils {
 
    private static boolean hasHMSAGConnectLibrary() {
       try {
-         com.huawei.agconnect.config.AGConnectServicesConfig.class.getName();
-         return true;
+         return opaqueHasClass(com.huawei.agconnect.config.AGConnectServicesConfig.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -187,8 +192,7 @@ class OSUtils {
 
    static boolean hasHMSLocationLibrary() {
       try {
-         com.huawei.hms.location.LocationCallback.class.getName();
-         return true;
+         return opaqueHasClass(com.huawei.hms.location.LocationCallback.class);
       } catch (NoClassDefFoundError e) {
          return false;
       }
@@ -402,13 +406,31 @@ class OSUtils {
       }
    }
 
-   static String getManifestMeta(Context context, String metaName) {
+   static Bundle getManifestMetaBundle(Context context) {
+      ApplicationInfo ai;
       try {
-         ApplicationInfo ai = context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
-         Bundle bundle = ai.metaData;
+         ai = context.getPackageManager().getApplicationInfo(context.getPackageName(), PackageManager.GET_META_DATA);
+         return ai.metaData;
+      } catch (PackageManager.NameNotFoundException e) {
+         Log(OneSignal.LOG_LEVEL.ERROR, "Manifest application info not found", e);
+      }
+
+      return null;
+   }
+
+   static boolean getManifestMetaBoolean(Context context, String metaName) {
+      Bundle bundle = getManifestMetaBundle(context);
+      if (bundle != null) {
+         return bundle.getBoolean(metaName);
+      }
+
+      return false;
+   }
+
+   static String getManifestMeta(Context context, String metaName) {
+      Bundle bundle = getManifestMetaBundle(context);
+      if (bundle != null) {
          return bundle.getString(metaName);
-      } catch (Throwable t) {
-         Log(OneSignal.LOG_LEVEL.ERROR, "", t);
       }
 
       return null;
@@ -420,24 +442,6 @@ class OSUtils {
       if (bodyResId != 0)
          return resources.getString(bodyResId);
       return defaultStr;
-   }
-
-   static String getCorrectedLanguage() {
-      String lang = Locale.getDefault().getLanguage();
-
-      // https://github.com/OneSignal/OneSignal-Android-SDK/issues/64
-      if (lang.equals("iw"))
-         return "he";
-      if (lang.equals("in"))
-         return "id";
-      if (lang.equals("ji"))
-         return "yi";
-
-      // https://github.com/OneSignal/OneSignal-Android-SDK/issues/98
-      if (lang.equals("zh"))
-         return lang + "-" + Locale.getDefault().getCountry();
-
-      return lang;
    }
 
    static boolean isValidEmail(String email) {
@@ -549,10 +553,16 @@ class OSUtils {
    }
 
    private static void openURLInBrowser(@NonNull Uri uri) {
+      Intent intent = openURLInBrowserIntent(uri);
+      OneSignal.appContext.startActivity(intent);
+   }
+
+   @NonNull
+   static Intent openURLInBrowserIntent(@NonNull Uri uri) {
       SchemaType type = uri.getScheme() != null ? SchemaType.fromString(uri.getScheme()) : null;
       if (type == null) {
-          type = SchemaType.HTTP;
-          if (!uri.toString().contains("://")) {
+         type = SchemaType.HTTP;
+         if (!uri.toString().contains("://")) {
             uri = Uri.parse("http://" + uri.toString());
          }
       }
@@ -569,11 +579,12 @@ class OSUtils {
             break;
       }
       intent.addFlags(
-              Intent.FLAG_ACTIVITY_NO_HISTORY |
-                      Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |
-                      Intent.FLAG_ACTIVITY_MULTIPLE_TASK |
-                      Intent.FLAG_ACTIVITY_NEW_TASK);
-      OneSignal.appContext.startActivity(intent);
+          Intent.FLAG_ACTIVITY_NO_HISTORY |
+          Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |
+          Intent.FLAG_ACTIVITY_MULTIPLE_TASK |
+          Intent.FLAG_ACTIVITY_NEW_TASK
+      );
+      return intent;
    }
 
    // Creates a new Set<T> that supports reads and writes from more than one thread at a time
@@ -643,4 +654,7 @@ class OSUtils {
       return true;
    }
 
+   static int getRandomDelay(int minDelay, int maxDelay) {
+      return new Random().nextInt(maxDelay + 1 - minDelay) + minDelay;
+   }
 }

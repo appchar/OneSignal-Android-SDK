@@ -48,7 +48,8 @@ class OSNotificationWorkManager {
         }
     }
 
-    static void beginEnqueueingWork(Context context, String osNotificationId, int androidNotificationId, String jsonPayload, boolean isRestoring, long timestamp, boolean isHighPriority) {
+    static void beginEnqueueingWork(Context context, String osNotificationId, int androidNotificationId, String jsonPayload, long timestamp,
+                                    boolean isRestoring, boolean isHighPriority) {
         // TODO: Need to figure out how to implement the isHighPriority param
         Data inputData = new Data.Builder()
                 .putInt(ANDROID_NOTIF_ID_WORKER_DATA_PARAM, androidNotificationId)
@@ -90,7 +91,6 @@ class OSNotificationWorkManager {
                         jsonPayload,
                         isRestoring,
                         timestamp);
-
             } catch (JSONException e) {
                 OneSignal.onesignalLog(OneSignal.LOG_LEVEL.ERROR, "Error occurred doing work for job with id: " + getId().toString());
                 e.printStackTrace();
@@ -99,9 +99,10 @@ class OSNotificationWorkManager {
             return Result.success();
         }
 
-        private void processNotificationData(Context context, int androidNotificationId, JSONObject jsonPayload, boolean isRestoring, Long timestamp) {
+        private void processNotificationData(Context context, int androidNotificationId, JSONObject jsonPayload,
+                                             boolean isRestoring, Long timestamp) {
             OSNotification notification = new OSNotification(null, jsonPayload, androidNotificationId);
-            OSNotificationController controller = new OSNotificationController(context, jsonPayload, isRestoring, true, timestamp);
+            OSNotificationController controller = new OSNotificationController(context, notification, jsonPayload, isRestoring, true, timestamp);
             OSNotificationReceivedEvent notificationReceived = new OSNotificationReceivedEvent(controller, notification);
 
             if (OneSignal.remoteNotificationReceivedHandler != null)

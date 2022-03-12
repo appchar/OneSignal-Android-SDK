@@ -1,16 +1,16 @@
-
-apply plugin: 'com.onesignal.androidsdk.onesignal-gradle-plugin'
 apply plugin: 'com.android.application'
 
 android {
-    compileSdkVersion 28
+    compileSdkVersion 31
     defaultConfig {
-        applicationId "com.onesignal.sdktest"
         minSdkVersion 16
-        targetSdkVersion 28
+        targetSdkVersion 31
         versionCode 1
         versionName "1.0"
+        multiDexEnabled true
+
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        flavorDimensions "default"
     }
 
     buildTypes {
@@ -20,35 +20,65 @@ android {
         }
     }
 
+    productFlavors {
+        gms {
+            dimension "default"
+            applicationId "com.onesignal.sdktest"
+        }
+        huawei {
+            dimension "default"
+            minSdkVersion 17
+            applicationId "com.onesignal.example"
+        }
+    }
+
     // Forced downgrade to Java 1.8 for compiling the application due to Android N error when building
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    packagingOptions {
+        exclude 'androidsupportmultidexversion.txt'
+    }
+
+    task flavorSelection() {
+        if (getGradle().getStartParameter().getTaskRequests().toString().contains("Gms")) {
+            apply plugin: 'com.google.gms.google-services'
+            googleServices { disableVersionCheck = true }
+        } else {
+            apply plugin: 'com.huawei.agconnect'
+        }
+    }
 }
 
 dependencies {
-    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation 'com.android.support:multidex:1.0.3'
+    implementation 'com.google.android.material:material:1.4.0'
+    implementation 'androidx.cardview:cardview:1.0.0'
+    implementation 'androidx.appcompat:appcompat:1.4.0'
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation 'androidx.vectordrawable:vectordrawable:1.1.0'
 
-    implementation 'com.google.android.material:material:[1.0.0, 1.99.99]'
+    implementation 'com.google.android.gms:play-services-location:18.0.0'
 
-    implementation 'androidx.cardview:cardview:[1.0.0, 1.99.99]'
-    implementation 'androidx.appcompat:appcompat:[1.0.0, 1.99.99]'
-    implementation 'androidx.legacy:legacy-support-v4:[1.0.0, 1.99.99]'
-    implementation 'androidx.vectordrawable:vectordrawable:[1.0.0, 1.99.99]'
+    implementation 'com.github.bumptech.glide:glide:4.12.0'
 
-    // Test local OneSignal SDK
-    implementation(project(':onesignal'))
+    /** START - Google Play Builds **/
+    gmsImplementation('com.onesignal:OneSignal:4.6.3')
+    /** END - Google Play Builds **/
 
-    // Test public release OneSignal SDK
-    // This will not work until 4.0.0 is publicly released because of manifest placeholders causing
-    //  manifest merger conflicts
-//    implementation 'com.onesignal:OneSignal:3.12.6'
-
-    implementation 'com.google.android.gms:play-services-location:[17.0.0, 17.99.99]'
-    // glide:4.9.0 is the last version before going to AndroidX
-    // glide:4.10.0 is the first version using AndroidX
-    implementation 'com.github.bumptech.glide:glide:[4.10.0, 4.99.99]'
+    /** START - Huawei Builds **/
+    // Omit Google / Firebase libraries for Huawei builds.
+    huaweiImplementation('com.onesignal:OneSignal:4.6.3') {
+        exclude group: 'com.google.android.gms', module: 'play-services-gcm'
+        exclude group: 'com.google.android.gms', module: 'play-services-analytics'
+        exclude group: 'com.google.android.gms', module: 'play-services-location'
+        exclude group: 'com.google.firebase', module: 'firebase-messaging'
+    }
+    // Add HMS Push library
+    huaweiImplementation 'com.huawei.hms:push:6.1.0.300'
+    // Optionally add HMS location
+    huaweiImplementation 'com.huawei.hms:location:4.0.0.300'
+    /** END - Huawei Builds **/
 }
-
-apply plugin: 'com.google.gms.google-services'
